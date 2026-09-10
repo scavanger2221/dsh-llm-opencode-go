@@ -1,0 +1,65 @@
+{
+  "name": "dsh-llm-opencode-go",
+  "description": "OpenCode Go models as a DeepSeek Harness provider, with session-affinity headers, a live model catalog, and a Web settings card",
+  "version": "0.1.0",
+  "publishConfig": {
+    "access": "public"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/scavanger2221/dsh-llm-opencode-go.git"
+  },
+  "bugs": {
+    "url": "https://github.com/scavanger2221/dsh-llm-opencode-go/issues"
+  },
+  "homepage": "https://github.com/scavanger2221/dsh-llm-opencode-go#readme",
+  "type": "module",
+  "main": "lib/index.js",
+  "exports": {
+    ".": "./lib/index.js",
+    "./client": "./lib/client.js",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "lib/index.js",
+    "lib/adapter.js",
+    "lib/catalog.js",
+    "lib/convert.js",
+    "lib/refresh.js",
+    "lib/client.js",
+    "cordis.patch.yml",
+    "README.zh.md"
+  ],
+  "scripts": {
+    "test": "node tests/adapter.smoke.mjs && node tests/card.smoke.mjs"
+  },
+  "engines": {
+    "node": "^22.19.0 || >=24.0.0"
+  },
+  "license": "MIT",
+  "dependencies": {
+    "@earendil-works/pi-ai": "^0.85.1"
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "inject": [
+        "@deepseek-ai/dsh-api-remotes",
+        "@deepseek-ai/dsh-client-locale",
+        "@deepseek-ai/dsh-client-ui-settings"
+      ],
+      "platform": "web"
+    }
+  },
+  "peerDependencies": {
+    "@deepseek-ai/cordis": "^4.0.2",
+    "@deepseek-ai/dsh-brand": ">=0.1.0-rc.6 <0.1.1 || >=0.1.1-rc.1 <1.0.0",
+    "@deepseek-ai/dsh-client-ui-settings": ">=0.1.0-rc.6 <0.1.1 || >=0.1.1-rc.1 <1.0.0",
+    "@deepseek-ai/dsh-launch-environment": ">=0.1.0-rc.6 <0.1.1 || >=0.1.1-rc.1 <1.0.0",
+    "@deepseek-ai/dsh-llm": ">=0.1.0-rc.6 <0.1.1 || >=0.1.1-rc.1 <1.0.0",
+    "@deepseek-ai/schemastery": "^3.18.2",
+    "react": "^18.2.0"
+  }
+}

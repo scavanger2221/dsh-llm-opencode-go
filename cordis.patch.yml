@@ -1,0 +1,21 @@
+# dsh-llm-opencode-go bundle patch: register the OpenCode Go adapter as one new
+# loader row. The row also carries the browser half: this package declares
+# `dsh.client`, so the same entry serves the OpenCode Go card under
+# Settings → Plugins.
+#
+# Every config field is optional — the adapter layers the `llm-opencode-go`
+# settings section over this entry, resolves the API key through the credentials
+# seam (OPENCODE_GO_API_KEY) per request, and re-reads the live model list on
+# mount and on an interval, so users finish setup from the card without editing
+# this file.
+#
+# The credential reference is not the conventional OPENCODE_API_KEY on purpose:
+# an exported value shadows the managed credential store, so a shell that
+# exports another OpenCode key would silently win.
+- insert:
+    - id: llm-opencode-go
+      name: 'dsh-llm-opencode-go'
+      config:
+        apiKeyEnv: OPENCODE_GO_API_KEY
+        refreshOnMount: true
+        refreshIntervalMs: 21600000
