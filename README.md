@@ -150,14 +150,19 @@ describes are still registered, using a vendor-prefix guess for the protocol;
 
 ## Development
 
-The host test imports harness packages, so it needs them resolvable — point a
-`node_modules` symlink at the profile-level module fallback, which mirrors the
-installed harness:
+There is nothing to install: `lib/` is the source. The tests run against an
+installed copy, because the host half imports harness packages and those resolve
+through the profile's module fallback:
 
 ~~~sh
-ln -s "$DSH_HOME/profiles/node_modules" node_modules
-pnpm test          # or: node tests/adapter.smoke.mjs && node tests/card.smoke.mjs
+cd "$DSH_HOME/profiles/web/plugins/dsh-llm-opencode-go"   # after installing
+node tests/adapter.smoke.mjs && node tests/card.smoke.mjs
 ~~~
+
+A checkout placed inside the profile tree (e.g. at `$PROFILE/plugins/`) runs them
+in place. Do **not** link `node_modules` at the profile's module fallback to make
+a checkout outside the profile work: pnpm follows the link and rewrites the
+shared fallback for every profile.
 
 `tests/adapter.smoke.mjs` drives a fake endpoint and asserts the wire request
 (URL, session headers, attribution headers, credential), the chunk stream, usage

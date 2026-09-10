@@ -1,7 +1,7 @@
 {
   "name": "dsh-llm-opencode-go",
   "description": "OpenCode Go models as a DeepSeek Harness provider, with session-affinity headers, a live model catalog, and a Web settings card",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "publishConfig": {
     "access": "public"
   },
@@ -37,9 +37,6 @@
     "node": "^22.19.0 || >=24.0.0"
   },
   "license": "MIT",
-  "dependencies": {
-    "@earendil-works/pi-ai": "^0.85.1"
-  },
   "dsh": {
     "bundle": {
       "patch": "./cordis.patch.yml"
@@ -60,6 +57,7 @@
     "@deepseek-ai/dsh-launch-environment": ">=0.1.0-rc.6 <0.1.1 || >=0.1.1-rc.1 <1.0.0",
     "@deepseek-ai/dsh-llm": ">=0.1.0-rc.6 <0.1.1 || >=0.1.1-rc.1 <1.0.0",
     "@deepseek-ai/schemastery": "^3.18.2",
+    "@earendil-works/pi-ai": "^0.85.1",
     "react": "^18.2.0"
   }
 }

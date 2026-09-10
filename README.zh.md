@@ -107,12 +107,14 @@ refs:
 
 ## 开发
 
-Host 测试会 import harness 包，因此需要它们可被解析 —— 把 `node_modules` 符号链接指向 profile 级模块回退目录（它镜像已安装的 harness）：
+无需安装任何东西：`lib/` 就是源码。测试针对已安装副本运行，因为 host 半边会 import harness 包，而这些包通过 profile 的模块回退目录解析：
 
 ~~~sh
-ln -s "$DSH_HOME/profiles/node_modules" node_modules
-pnpm test          # 或：node tests/adapter.smoke.mjs && node tests/card.smoke.mjs
+cd "$DSH_HOME/profiles/web/plugins/dsh-llm-opencode-go"   # 安装之后
+node tests/adapter.smoke.mjs && node tests/card.smoke.mjs
 ~~~
+
+把 checkout 放在 profile 目录树内（例如 `$PROFILE/plugins/`）即可就地运行。**不要**把 `node_modules` 链接到 profile 的模块回退目录来让 profile 之外的 checkout 工作：pnpm 会跟随该链接并重写所有 profile 共享的回退目录。
 
 `tests/adapter.smoke.mjs` 驱动一个假端点，断言线上请求（URL、会话头、attribution 头、凭据）、chunk 流、usage 映射、replay envelope、配置覆盖项与 `MISSING_CREDENTIAL` 路径。`tests/card.smoke.mjs` 在 stub 模块系统与 stub React 下加载真实的浏览器 bundle，断言卡片的折叠外壳、暂存编辑与保存负载。
 

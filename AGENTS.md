@@ -44,12 +44,33 @@ bundler, and do not generate `lib/` from anywhere else.
 
 ## Tests
 
+There is no install step and this repository is not a package-manager project.
+Run the tests from an installed copy, where the harness packages resolve through
+the profile's module fallback:
+
 ~~~sh
-ln -s "$DSH_HOME/profiles/node_modules" node_modules   # once; gitignored
-pnpm test
+cd "$DSH_HOME/profiles/web/plugins/dsh-llm-opencode-go"   # after installing
+node tests/adapter.smoke.mjs && node tests/card.smoke.mjs
 ~~~
 
-The host test needs the harness packages resolvable, which the symlink provides.
+A checkout placed inside the profile tree runs them in place.
+
+**Never link `node_modules` at `$DSH_HOME/profiles/node_modules`.** That directory
+is the shared module fallback every profile resolves through; pnpm follows the
+link and rewrites it with npm-published package versions, which silently breaks
+the installed harness (a real incident: `@deepseek-ai/dsh-brand` from npm does not
+export `brandString`, so the host half stopped importing). If the fallback is ever
+clobbered, rebuild it from the installation — `--dump-config` does not heal, only
+a real boot does:
+
+~~~sh
+INSTALL="$(npm root -g)/@deepseek-ai/dsh"
+node --input-type=module -e "
+import { healProfilesModuleFallback } from '$INSTALL/node_modules/@deepseek-ai/dsh-app-boot/lib/index.js'
+await healProfilesModuleFallback({ installAnchor: '$INSTALL/package.json', home: '$HOME/.dsh' })
+"
+~~~
+
 `tests/adapter.smoke.mjs` drives a fake HTTP endpoint and asserts the wire request
 and the conversion contracts; `tests/card.smoke.mjs` loads the real browser bundle
 under a stub module system and drives the card's interactions. Both must pass
