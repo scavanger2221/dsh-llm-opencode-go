@@ -3,6 +3,10 @@
 ## Unreleased
 
 
+## 0.1.2
+
+- Discoverability: npm `keywords` (`dsh-plugin`, `deepseek-harness`, …) and the `dsh-plugin` GitHub topic, which is what `dsh-find-plugin` and the curated plugin list search on
+
 ## 0.1.1
 
 - Declare `@earendil-works/pi-ai` as a peer instead of a dependency. As a dependency it pulled its own transitive closure (93 packages, including build-script dependencies pnpm's supply-chain gate then refuses), which made `dsh plugin add github:…` fail before it could activate the bundle layer. The Harness already supplies pi-ai through the profile module fallback, so nothing is lost.
