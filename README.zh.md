@@ -18,7 +18,7 @@ Go 有两件事是共享的 pi-ai adapter 无法提供的：
 需要 DeepSeek Harness 0.1.0-rc.6 或更高版本。直接从 GitHub 安装：
 
 ~~~sh
-dsh plugin --profile web add github:scavanger2221/dsh-llm-opencode-go#v0.1.0
+dsh plugin --profile web add github:scavanger2221/dsh-llm-opencode-go#v0.1.3
 dsh web
 ~~~
 
