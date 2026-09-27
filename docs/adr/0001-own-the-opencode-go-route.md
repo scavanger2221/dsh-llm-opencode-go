@@ -6,6 +6,10 @@ English | [中文](0001-own-the-opencode-go-route.zh.md)
 
 Accepted — 2026-09-10
 
+The settings-card destination named under Consequences is superseded by
+[ADR 0002](0002-model-provider-settings-on-the-models-page.md): the card moved
+from Settings → Plugins to Settings → Models. Everything else here stands.
+
 ## Context
 
 `@earendil-works/pi-ai` already ships an `opencode-go` provider: it carries the

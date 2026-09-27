@@ -6,6 +6,8 @@
 
 已接受 — 2026-09-10
 
+「后果」中提到的设置卡片去处已由 [ADR 0002](0002-model-provider-settings-on-the-models-page.zh.md) 取代：卡片从 Settings → Plugins 迁移到 Settings → Models。其余内容不变。
+
 ## 背景
 
 `@earendil-works/pi-ai` 已经附带了一个 `opencode-go` provider：它承载 Go 支持的三种线上协议（`openai-completions`、`openai-responses`、`anthropic-messages`），以及一份发布时已存在模型的固定目录。直接委托给它几乎不需要写代码 —— profile 声明一个 provider profile 即可。

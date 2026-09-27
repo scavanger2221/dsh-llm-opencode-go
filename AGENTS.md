@@ -8,7 +8,8 @@ One DeepSeek Harness plugin, published as one package, in two halves:
 
 - `lib/index.js` + `lib/adapter.js` + `lib/catalog.js` + `lib/refresh.js` +
   `lib/convert.js` — the host half: the `opencode-go` LLM route.
-- `lib/client.js` — the browser half: the Settings → Plugins card.
+- `lib/client.js` — the browser half: the settings card in the Models page footer
+  (`settings.models.footer`).
 - `cordis.patch.yml` — the bundle layer that mounts the single row which carries
   both halves (`dsh.bundle` + `dsh.client` in `package.json`).
 
@@ -21,20 +22,75 @@ bundler, and do not generate `lib/` from anywhere else.
 - **The client bundle is hand-written in the module-system format.** It must keep
   the `window.__ModuleLoader__.load({ id: '<package name>', factory })` wrapper,
   the `id` equal to the package name, and `exports.apply` + `exports.inject` on
-  the returned object. It may `require` only the shell's static module table
-  (`react`, `react/jsx-runtime`, `@deepseek-ai/dsh-client-ui-primitives`, …) plus
-  its own files. Cross-plugin imports are forbidden: collaborate through cordis
-  services (`exports.inject`) instead.
+  the returned object. Require only primitives the shipped package declares: a
+  wrong export name is not an error, it silently becomes the card's fallback
+  (the header chevron asked for `IconChevronDownOutline14`, which no package has
+  ever exported, and drew a `▾` text glyph instead of the icon every shipped
+  package uses, `IconChevronDownOutlineRegular`). It may `require` only the
+  shell's static module table (`react`, `react/jsx-runtime`,
+  `@deepseek-ai/dsh-client-ui-primitives`, …) plus its own files. Cross-plugin
+  imports are forbidden: collaborate through cordis services (`exports.inject`)
+  instead.
 - **Every provider request carries the session headers.** `x-opencode-session` and
   `x-deepseek-harness-session-id` come from `GenerateOptions.sessionId`; Go
   refuses a request without them (`400 MissingSessionID`). The attribution headers
   from `attributionHeaders()` are mandatory and must not be overridable by
   deployment config.
+- **`lib/convert.js` mirrors `dsh-llm-pi-ai`'s conversion, and must keep doing
+  so.** The harness↔pi-ai seam (history refusals, `toolResult` projection,
+  `userContent`, offload, stop/usage/error mapping) is owned by the shipped
+  pi-ai adapter; this route duplicates that seam only because it must add the
+  session headers, so a divergence is a bug in this plugin, not a design choice.
+  A tool result is a first-class `{role:'tool', content, toolCallId, isError}`
+  message — there is no `tool-result` block type — and images are legal in
+  `user` and `tool` messages, refused in every other role. On a harness or
+  pi-ai upgrade, re-diff the context region of `dsh-llm-pi-ai/lib/index.js`
+  against `lib/convert.js`; `tests/adapter.smoke.mjs` pins the resulting rules.
 - **Do not put a secret in a settings field.** The API key goes through the
   credentials service (`ctx.credentials.resolve(apiKeyEnv)`); settings fields are
   the endpoint, refresh policy, and model overrides. The `OPENCODE_GO_API_KEY`
   reference exists because an exported environment variable shadows the managed
   credential store.
+- **A field must be `.volatile()` to be editable, or the card renders nothing.**
+  On 0.1.7 the settings service projects a namespace only for a schema with at
+  least one volatile node (`volatileForm`) — with none, `configForms.get(NS)`
+  reports the namespace unavailable and the card returns `null`. Volatile also
+  means "commit in place": the write does not remount the entry, so derived state
+  is rebuilt from the `loader/volatile-update` event (see `resync`).
+- **Read configuration through the live Config references.** From 0.1.7 the
+  Loader hands `apply` a Schemastery Config whose volatile nodes are references
+  (`config.apiRoot.get()`), not a plain object. Field access without `.get()`
+  yields a reference object, so every `textOr(value, DEFAULT)` silently falls
+  back to its default and the settings document appears to do nothing.
+  `settings.installSection` and the `settingsScope` client service no longer
+  exist.
+- **The settings card lives in the Models page footer**, not in a provider row:
+  `llm-pi-ai` declares the whole pi-ai provider catalog, `opencode-go` included,
+  so `settings.models.provider-card` for that row dispatches under the
+  `llm-pi-ai` namespace and this plugin's own directory entry is refused as a
+  duplicate. `settings.models.footer` needs no directory row.
+- **An override states only what it changes.** The card's per-model form keeps
+  every untouched field on Inherit and leaves it out of the entry, because the
+  catalog merge (`mergeModel`) only takes the fields an entry carries. Writing
+  every field instead is not harmless: `LlmDiscoveredModel` — the whole
+  `llm.registerModelDiscovery` contract — carries `id`, `name`, `contextWindow`,
+  `maxTokens`, and `inputModalities`, and **not** the protocol or the reasoning
+  flag, so a form that must state them can only guess, and a wrong guess switches
+  a model's wire protocol. The discovery reply must keep carrying the facts it
+  can (`catalogView`, host half): the per-model list renders exactly those.
+- **A disabled model is described but not served.** `models:` entries take
+  `disabled: true`, and the catalog keeps every described id in one ordered map:
+  `models()`, `ids()`, and `get()` exclude the disabled ones (that is what the
+  provider advertises and what the picker reads), while `all()` includes them
+  (that is what `llm.registerModelDiscovery` must answer from, or the settings
+  card loses the facts of the very row the user switched off). A live refresh
+  must never re-add one — a configured id belongs to configuration, not to the
+  endpoint — and an error naming a disabled model should say it is disabled
+  rather than "unknown".
+- **`$DSH_HOME/settings.yaml` is not a configuration surface on 0.1.7.** The
+  Harness imported it once into `settings.yaml.imported` and stopped reading it;
+  per-row settings live as a `config:` override on the row in the active
+  profile's `cordis.patch.yml`, which is also where the card's saves land.
 - **A symlinked checkout cannot be installed where it stands.** Node resolves a
   symlinked package to its real path, so the imports inside this plugin walk up
   from the checkout and fail. Install by copying into the profile tree
@@ -50,7 +106,7 @@ the profile's module fallback:
 
 ~~~sh
 cd "$DSH_HOME/profiles/web/plugins/dsh-llm-opencode-go"   # after installing
-node tests/adapter.smoke.mjs && node tests/card.smoke.mjs
+node tests/adapter.smoke.mjs && node tests/host.smoke.mjs && node tests/card.smoke.mjs
 ~~~
 
 A checkout placed inside the profile tree runs them in place.
@@ -72,10 +128,14 @@ await healProfilesModuleFallback({ installAnchor: '$INSTALL/package.json', home:
 ~~~
 
 `tests/adapter.smoke.mjs` drives a fake HTTP endpoint and asserts the wire request
-and the conversion contracts; `tests/card.smoke.mjs` loads the real browser bundle
-under a stub module system and drives the card's interactions. Both must pass
-before a change is done — the card test in particular catches hook and
-registration-shape mistakes that a syntax check cannot.
+and the conversion contracts; `tests/host.smoke.mjs` mounts the plugin into a stub
+Cordis context and asserts the route registration, the directory entry, the
+settings page policy, and — with a real `Config` — that configured values reach
+the route instead of falling back to schema defaults; `tests/card.smoke.mjs` loads
+the real browser bundle under a stub module system and drives the card's
+interactions. All three must pass before a change is done — the card test in
+particular catches hook and registration-shape mistakes that a syntax check
+cannot.
 
 ## Documentation
 

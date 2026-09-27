@@ -108,6 +108,45 @@ assert(added.input.join('+') === 'text+image', 'configured model accepts images'
 assert(configured.get('glm-5.3').reasoning === false, 'an override can turn reasoning off')
 assert(configured.get('glm-5.3').input.join('+') === 'text', 'an override can narrow allowed input')
 assert(configured.get('glm-5.3').contextWindow === 1000000, 'an override keeps untouched installed facts')
+assert(
+  configured.get('glm-5.3').api === catalog.get('glm-5.3').api,
+  'an override that states no protocol keeps the installed one',
+)
+
+// The settings card writes partial overrides — every field it leaves on Inherit
+// is absent from the entry — so one edited capacity must not disturb a model's
+// protocol, reasoning flag, or modalities.
+const partial = createCatalog({
+  apiRoot,
+  providerId: 'opencode-go',
+  models: [{ id: 'glm-5.3', contextWindow: 4242 }],
+})
+const merged = partial.get('glm-5.3')
+const installed = catalog.get('glm-5.3')
+assert(merged.contextWindow === 4242, 'a partial override states the capacity it changes')
+assert(merged.api === installed.api, 'a partial override keeps the installed protocol')
+assert(merged.reasoning === installed.reasoning, 'a partial override keeps the installed reasoning flag')
+assert(merged.input.join('+') === installed.input.join('+'), 'a partial override keeps the installed modalities')
+
+// Disabling takes a model out of the served catalog without losing what is known
+// about it, and a later refresh must not quietly bring it back.
+const off = createCatalog({
+  apiRoot,
+  providerId: 'opencode-go',
+  models: [{ id: 'glm-5.3', disabled: true }],
+})
+assert(off.get('glm-5.3') === undefined, 'a disabled model is not served')
+assert(!off.ids().includes('glm-5.3'), 'a disabled model is not advertised')
+assert(off.isDisabled('glm-5.3') === true, 'the catalog reports why the id is missing')
+assert(off.all().get('glm-5.3') !== undefined, 'a disabled model stays described')
+assert(
+  off.models().size === catalog.models().size - 1,
+  'disabling removes that model from the served ones and nothing else',
+)
+assert(off.mergeRefreshed([{ id: 'glm-5.3', name: 'GLM 5.3' }]).length === 0, 'a refresh adds no disabled id')
+assert(off.get('glm-5.3') === undefined, 'a disabled model stays disabled across a refresh')
+const back = createCatalog({ apiRoot, providerId: 'opencode-go', models: [{ id: 'glm-5.3', disabled: false }] })
+assert(back.get('glm-5.3') !== undefined, 'the same entry with the flag off serves the model again')
 
 const chunks = []
 const options = {
@@ -173,6 +212,203 @@ try {
   credentialFailure = error.code
 }
 assert(credentialFailure === 'MISSING_CREDENTIAL', `keyless request fails with ${credentialFailure}`)
+
+// An image request must hand the attachment service a resolved pixel target.
+// `readImageRequest(ref, target)` takes {width, height, maxBytes}; the route's
+// pixel/byte budget is not a target, it is projected through the source size
+// first. The stub below mirrors the harness's own validation so a budget-shaped
+// object fails here the way it failed in production.
+const imageReads = []
+const fakeImages = {
+  imageHostPath: () => undefined,
+  async readImageRequest(ref, target) {
+    for (const [name, value] of [
+      ['width', target?.width],
+      ['height', target?.height],
+      ['maxBytes', target?.maxBytes],
+    ]) {
+      if (!Number.isSafeInteger(value) || value <= 0) {
+        throw new Error(`Image request ${name} must be a positive integer.`)
+      }
+    }
+    imageReads.push({ ref, target })
+    const data = new Uint8Array([1, 2, 3, 4])
+    return {
+      variantId: 'sha256:test',
+      attachment: ref,
+      data,
+      mediaType: ref.mediaType,
+      bytes: data.byteLength,
+      width: target.width,
+      height: target.height,
+      depth: 'uchar',
+      space: 'srgb',
+      hasAlpha: false,
+    }
+  },
+}
+const imageAdapter = new OpenCodeGoAdapter({ ...adapter.config, resolveAttachments: () => fakeImages })
+const imageOptions = {
+  provider: 'opencode-go',
+  model: 'deepseek-v4-flash-vision-exp',
+  sessionId: 'session-image',
+  messages: [
+    {
+      id: 'm-image',
+      role: 'user',
+      content: [
+        { type: 'text', text: 'look' },
+        {
+          type: 'image',
+          attachment: {
+            attachmentId: 'att-1',
+            mediaType: 'image/webp',
+            bytes: 273152,
+            width: 776,
+            height: 352,
+          },
+        },
+      ],
+      source: { kind: 'user' },
+    },
+  ],
+}
+for await (const _chunk of imageAdapter.stream(imageOptions)) {
+  /* drain */
+}
+assert(imageReads.length === 1, 'one request image read for one attachment')
+assert(
+  imageReads[0].target.width === 776 &&
+    imageReads[0].target.height === 352 &&
+    imageReads[0].target.maxBytes === 1048576,
+  `image target is a resolved pixel target (${JSON.stringify(imageReads[0].target)})`,
+)
+assert(JSON.stringify(seen.at(-1).body).includes('base64'), 'image bytes reached the wire')
+
+// A tool result is a first-class `tool` message whose own content is the tool's
+// output. An image inside one is history the model has already been shown, so it
+// replays from the tool result — failing the turn is not an option, and neither
+// is attributing the output to the user.
+const toolHistory = {
+  provider: 'opencode-go',
+  model: 'deepseek-v4-flash-vision-exp',
+  sessionId: 'session-tool-image',
+  messages: [
+    {
+      id: 'm-user',
+      role: 'user',
+      content: [{ type: 'text', text: 'what is in the image?' }],
+      source: { kind: 'user' },
+    },
+    {
+      id: 'm-assistant',
+      role: 'assistant',
+      content: [{ type: 'tool-call', id: 'call-read', name: 'read_image', arguments: '{}' }],
+      source: { kind: 'model' },
+    },
+    {
+      id: 'm-tool-image',
+      role: 'tool',
+      toolCallId: 'call-read',
+      content: [
+        { type: 'text', text: 'screenshot attached' },
+        {
+          type: 'image',
+          attachment: {
+            attachmentId: 'att-2',
+            mediaType: 'image/webp',
+            bytes: 273152,
+            width: 776,
+            height: 352,
+          },
+        },
+      ],
+    },
+    {
+      id: 'm-assistant-2',
+      role: 'assistant',
+      content: [{ type: 'tool-call', id: 'call-shell', name: 'bash', arguments: '{}' }],
+      source: { kind: 'model' },
+    },
+    {
+      id: 'm-tool-text',
+      role: 'tool',
+      toolCallId: 'call-shell',
+      content: [{ type: 'text', text: 'total 0' }],
+    },
+  ],
+}
+for await (const _chunk of imageAdapter.stream(toolHistory)) {
+  /* drain */
+}
+const toolBody = seen.at(-1).body
+const toolRoles = toolBody.messages.map((entry) => entry.role)
+const shellResult = toolBody.messages.find(
+  (entry) => entry.role === 'tool' && entry.tool_call_id === 'call-shell',
+)
+assert(
+  shellResult !== undefined && shellResult.content === 'total 0',
+  `a text tool result reaches the wire as a tool message (${toolRoles.join(',')})`,
+)
+assert(
+  JSON.stringify(toolBody).includes('data:image/webp;base64'),
+  'an in-history tool image replays instead of failing the turn',
+)
+
+// The refusals mirror `dsh-llm-pi-ai`'s own history guards, so a history this
+// route accepts is a history pi-ai's conversion accepts — and one it refuses is
+// refused before any provider I/O.
+const refusal = async (label, base, messages, extra) => {
+  const before = seen.length
+  let code
+  try {
+    for await (const _chunk of base.stream({ ...(extra?.options ?? options), ...extra, messages })) {
+      /* drain */
+    }
+  } catch (error) {
+    code = error.code
+  }
+  assert(code === 'UNSUPPORTED_CONTENT' && seen.length === before, `${label} is refused with ${code}`)
+}
+await refusal('a developer message', adapter, [
+  { id: 'd1', role: 'developer', content: [{ type: 'text', text: 'x' }], source: { kind: 'developer' } },
+])
+await refusal('a tool-change block', adapter, [
+  {
+    id: 'd2',
+    role: 'user',
+    content: [{ type: 'tool-addition', name: 'late-tool' }],
+    source: { kind: 'user' },
+  },
+])
+await refusal('deferred tool loading', adapter, options.messages, {
+  tools: [{ name: 'late-tool', description: '', parameters: {}, deferLoading: true }],
+})
+await refusal(
+  'an image in an assistant message',
+  imageAdapter,
+  [
+    {
+      id: 'a1',
+      role: 'assistant',
+      content: [
+        { type: 'text', text: 'x' },
+        {
+          type: 'image',
+          attachment: {
+            attachmentId: 'att-3',
+            mediaType: 'image/webp',
+            bytes: 1024,
+            width: 32,
+            height: 32,
+          },
+        },
+      ],
+      source: { kind: 'model' },
+    },
+  ],
+  { options: imageOptions },
+)
 
 server.close()
 console.log('ADAPTER SMOKE OK')

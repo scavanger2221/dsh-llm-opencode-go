@@ -4,3 +4,5 @@ pnpm-workspace.yaml
 *.tgz
 coverage/
 *.log
+.scratch/
+.agent-shots/

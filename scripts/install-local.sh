@@ -109,5 +109,7 @@ install-local.sh: done.
 Next:
   1. Restart the app so the row mounts:  dsh $PROFILE
   2. Set the API key if this harness home has none yet:
-     Settings -> Plugins -> OpenCode Go -> API key
+     Settings -> Models -> OpenCode Go -> API key
+  3. Refresh the browser tab: the client module graph is served per page load,
+     so a card that moved seats needs the new one.
 EOF

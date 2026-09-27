@@ -121,9 +121,42 @@ function byText(tree, label, kind) {
 }
 
 // ── load the bundle exactly as the browser module system does ────────────────
+/** Where the card's plan-usage read went, and what the route answers next. */
+const usageCalls = []
+const futureIso = (milliseconds) => new Date(Date.now() + milliseconds).toISOString()
+let usageReply = {
+  status: 200,
+  body: {
+    windows: [
+      { key: 'rolling', status: 'ok', percent: 0, resetsAt: futureIso(4 * 3600000 + 51 * 60000) },
+      { key: 'weekly', status: 'ok', percent: 40, resetsAt: futureIso(3 * 86400000 + 12 * 3600000) },
+      { key: 'monthly', status: 'ok', percent: 59, resetsAt: futureIso(15 * 86400000) },
+    ],
+    fetchedAt: new Date().toISOString(),
+  },
+}
+/**
+ * The plan-usage route as the page sees it. The body is either the host's own
+ * `{ windows }` reply or a raw string, which stands for a deployment whose host
+ * half predates the route and answers the page shell instead of JSON.
+ */
+const fetchUsage = async (url, options) => {
+  usageCalls.push({ url, options })
+  const reply = usageReply
+  return {
+    ok: reply.status >= 200 && reply.status < 300,
+    status: reply.status,
+    async json() {
+      if (typeof reply.body === 'string') throw new SyntaxError('Unexpected token <')
+      return reply.body
+    },
+  }
+}
+
 let registration
 const sandbox = {
   window: { __ModuleLoader__: { load: (value) => (registration = value) } },
+  fetch: fetchUsage,
   document: {
     head: { appendChild() {} },
     querySelector: () => null,
@@ -150,20 +183,21 @@ const module = registration.factory((specifier) => {
 })
 assert.deepEqual(loaded, ['react', '@deepseek-ai/dsh-client-ui-primitives'])
 assert.equal(typeof module.apply, 'function', 'exports apply')
-for (const service of ['slots', 'locale', 'remote', 'settingsScope']) {
+for (const service of ['slots', 'locale', 'remote', 'configForms']) {
   assert.ok(module.inject.includes(service), `inject declares ${service}`)
 }
 
 // ── the host services the card consumes, recorded as it uses them ────────────
 const calls = { credentialSet: [], credentialUnset: [], credentialDescribe: [], mutations: [], writes: [], discovery: [], registered: [] }
 let state = {
+  displayName: 'OpenCode Go',
   apiRoot: 'https://opencode.ai/zen/go',
   apiKeyEnv: 'OPENCODE_GO_API_KEY',
   refreshIntervalMs: 21600000,
   refreshEpoch: 0,
   models: [],
 }
-const base = { apiRoot: 'https://opencode.ai/zen/go', refreshIntervalMs: 21600000, models: [], apiKeyEnv: 'OPENCODE_GO_API_KEY', refreshEpoch: 0 }
+const base = { displayName: 'OpenCode Go', apiRoot: 'https://opencode.ai/zen/go', refreshIntervalMs: 21600000, models: [], apiKeyEnv: 'OPENCODE_GO_API_KEY', refreshEpoch: 0 }
 let snapshot = { status: 'ready', writable: true, user: null, base, value: state, mode: 'host', revision: 1 }
 const scope = {
   getSnapshot: () => snapshot,
@@ -172,7 +206,12 @@ const scope = {
   unset: async (field) => calls.writes.push({ op: 'unset', field }),
   mutate: async (ops) => calls.mutations.push(plain(ops)),
 }
-const advertised = [{ id: 'glm-5.3' }, { id: 'minimax-m3' }, { id: 'grok-4.6' }]
+// What the host's model discovery answers: the effective catalog, facts included.
+const advertised = [
+  { id: 'glm-5.3', name: 'GLM 5.3', contextWindow: 1000000, maxTokens: 32768, inputModalities: ['text', 'image'] },
+  { id: 'minimax-m3', name: 'MiniMax M3', contextWindow: 1048576, maxTokens: 65536, inputModalities: ['text'] },
+  { id: 'grok-4.6', name: 'Grok 4.6', contextWindow: 131072, maxTokens: 16384, inputModalities: ['text'] },
+]
 const ctx = {
   effect: (factory) => {
     const disposer = factory()
@@ -180,7 +219,7 @@ const ctx = {
   },
   inject: (names, callback) => callback(ctx),
   locale: { register: () => {}, bind: () => (key) => key },
-  settingsScope: { bind: () => scope },
+  configForms: { get: () => scope },
   remote: {
     $on: () => () => {},
     credentials: {
@@ -217,9 +256,9 @@ const ctx = {
 }
 module.apply(ctx)
 
-const card = calls.registered.find((entry) => entry.name === 'settings.plugin.item')
-assert.ok(card !== undefined, 'registers into settings.plugin.item')
-assert.equal(card.result.options.key, NS, 'keyed by the provider settings namespace')
+const card = calls.registered.find((entry) => entry.name === 'settings.models.footer')
+assert.ok(card !== undefined, 'registers into settings.models.footer')
+assert.equal(card.result.options.id, NS, 'the footer entry carries this plugin id')
 assert.equal(card.result.options.locale, NS, 'ships its own locale namespace')
 
 const injected = card.result.options.inject()
@@ -229,9 +268,35 @@ assert.equal(typeof injected.credentials.set, 'function', 'injects the credentia
 /** The card's copy, with the placeholders these assertions read. */
 const copy = {
   keyRef: 'Read from {ref}',
-  catalogLocal: '{count} models in the live catalog.',
-  catalogLive: '{count} models advertised by the endpoint.',
+  modelsMeta: '{count} models',
+  modelsMetaOverrides: '{count} overridden',
+  modelsMetaDisabled: '{count} disabled',
+  catalogSourceLocal: 'live catalog',
+  catalogSourceEndpoint: 'endpoint',
+  factsContext: 'ctx',
+  factsOutput: 'out',
+  factsBoth: 'text + images',
+  factsText: 'text',
   failed: 'Failed: {message}',
+  usageTitle: 'Plan usage',
+  usageHint: 'Go meters a subscription in three windows.',
+  usageLoading: 'Reading plan usage…',
+  usageRetry: 'Refresh plan usage',
+  usageRefreshing: 'Refreshing plan usage…',
+  usageUpdated: 'Updated {time}',
+  usageMissingKey: 'Add an API key to read plan usage.',
+  usageUnavailable: 'This deployment does not serve the plan-usage route.',
+  usageFailed: 'Could not read plan usage: {message}',
+  usageUsed: '{percent}% used',
+  usageWindowRolling: '5-hour window',
+  usageWindowWeekly: 'Weekly',
+  usageWindowMonthly: 'Monthly',
+  usageResets: 'resets in {when}',
+  usageResetsNow: 'resetting now',
+  usageDays: '{count}d',
+  usageHours: '{count}h',
+  usageMinutes: '{count}m',
+  usageLimited: 'Limited',
 }
 const t = (key) => copy[key] ?? key
 const render = () => React.render(card.result.component, { ...injected, t })
@@ -250,19 +315,44 @@ const openCard = () => {
   return tree
 }
 
+/** The header button of one rendered tree. */
+function headerOf(node) {
+  return findAll(node, (element) => element.props?.className === 'ogcHeader')[0]
+}
+
 render()
 await flush()
 let tree = render()
 
-// ── the chrome: collapsed header, like the shipped plugin cards ──────────────
-assert.equal(tree.type, 'li', 'renders a list item inside the cards list')
+// ── the chrome: a page-level card in the Models footer ──────────────────────
+assert.equal(tree.type, 'div', 'renders a block, not a list item')
 assert.equal(tree.props.className, 'ogcCard', 'starts collapsed')
-const header = findAll(tree, (element) => element.props?.className === 'ogcHeader')[0]
+const header = headerOf(tree)
 assert.ok(header !== undefined, 'renders the header button')
 assert.equal(header.props['aria-expanded'], false)
-assert.deepEqual(texts(header), ['title', 'description'], 'the collapsed header names the plugin')
+assert.deepEqual(
+  texts(header).slice(0, 2),
+  ['OpenCode Go', 'description'],
+  'titles the card with the configured display name',
+)
+assert.deepEqual(
+  texts(header).slice(2),
+  ['Monthly 59%'],
+  'the closed card names the most-used window, so the plan is readable without expanding',
+)
 assert.equal(findAll(tree, (element) => element.props?.className === 'ogcBody').length, 0, 'no body while collapsed')
 assert.equal(findAll(tree, (element) => element.props?.className === 'ogcPending').length, 0, 'clean card shows no unsaved tag')
+
+// A deployment that renames the provider is what the heading follows; with no
+// name in the section the shipped copy is the fallback.
+snapshot = { ...snapshot, value: { ...state, displayName: '' } }
+assert.deepEqual(
+  texts(headerOf(render())).slice(0, 2),
+  ['title', 'description'],
+  'falls back to the shipped name',
+)
+snapshot = { ...snapshot, value: state }
+tree = render()
 
 // ── opening reveals the fields, and the mount reads already happened ─────────
 header.props.onClick()
@@ -270,16 +360,137 @@ tree = render()
 assert.equal(tree.props.className, 'ogcCard ogcCardOpen', 'header click opens the card')
 assert.equal(findAll(tree, (element) => element.props?.className === 'ogcBody').length, 1)
 const open = texts(tree)
-for (const key of ['keyLabel', 'endpointLabel', 'intervalLabel', 'catalogTitle', 'modelsTitle']) {
+for (const key of ['keyLabel', 'endpointLabel', 'intervalLabel', 'modelsTitle']) {
   assert.ok(open.includes(key), `open card renders ${key}`)
 }
-assert.ok(open.includes('3 models in the live catalog.'), 'card reports the local catalog size')
+assert.ok(open.includes('Plan usage'), 'the open card renders the usage panel')
+assert.ok(open.includes('3 models · live catalog'), 'the count line reports the list and its source')
 assert.deepEqual(
   plain(calls.discovery[0]),
   { namespace: NS, request: { provider: 'opencode-go' } },
   'reads the local catalog on mount without hitting the endpoint',
 )
 assert.deepEqual(calls.credentialDescribe[0], ['OPENCODE_GO_API_KEY'], 'describes the credential on mount')
+
+// ── plan usage: one read of the host route, drawn as three metered windows ──
+assert.equal(usageCalls[0]?.url, '/api/opencode-go/usage', 'the card reads the host’s own plan-usage route')
+assert.deepEqual(
+  plain(usageCalls[0]?.options),
+  { headers: { accept: 'application/json' } },
+  'the page asks for JSON and carries no credential of its own',
+)
+assert.ok(open.includes('5-hour window'), 'a window names the rolling 5-hour limit')
+assert.ok(open.includes('Weekly') && open.includes('Monthly'), 'the weekly and monthly windows are drawn too')
+assert.ok(
+  open.includes('0% used') && open.includes('40% used') && open.includes('59% used'),
+  'each window states the share of its own allowance that is used',
+)
+assert.ok(open.includes('resets in 4h 51m'), 'a window says when it resets, in the units the copy orders')
+assert.ok(open.includes('resets in 3d 12h'), 'a multi-day reset reads as days and hours')
+assert.ok(open.includes('resets in 15d'), 'a whole-day reset keeps its days and drops the zero hours')
+const bars = findAll(tree, (element) => element.props?.className === 'ogcBar')
+assert.equal(bars.length, 3, 'one bar per metered window')
+assert.deepEqual(
+  bars.map((bar) => bar.props['aria-valuenow']),
+  [0, 40, 59],
+  'a bar exposes to assistive tech the same share it draws',
+)
+const fills = findAll(
+  tree,
+  (element) => typeof element.props?.className === 'string' && element.props.className.startsWith('ogcBarFill'),
+)
+assert.deepEqual(
+  plain(fills.map((fill) => [fill.props.className, fill.props.style])),
+  [
+    ['ogcBarFill', { width: '0%' }],
+    ['ogcBarFill', { width: '40%' }],
+    ['ogcBarFill', { width: '59%' }],
+  ],
+  'a window below the warning line keeps the brand fill, at the width of its share',
+)
+
+// A nearly spent window is colored as one, and the header keeps naming it.
+usageReply = {
+  status: 200,
+  body: {
+    windows: [
+      { key: 'rolling', status: 'ok', percent: 12, resetsAt: futureIso(3600000) },
+      { key: 'weekly', status: 'ok', percent: 92, resetsAt: futureIso(86400000) },
+      { key: 'monthly', status: 'limit_reached', percent: 100, resetsAt: futureIso(86400000) },
+    ],
+    fetchedAt: new Date().toISOString(),
+  },
+}
+render()
+await flush()
+tree = render()
+assert.deepEqual(
+  plain(
+    findAll(tree, (element) =>
+      typeof element.props?.className === 'string' && element.props.className.startsWith('ogcBarFill'),
+    ).map((fill) => fill.props.className),
+  ),
+  ['ogcBarFill', 'ogcBarFill ogcBarWarn', 'ogcBarFill ogcBarFull'],
+  'a nearly spent window warns, and a spent one is an error rather than more brand color',
+)
+assert.ok(texts(tree).includes('Limited'), 'a window the endpoint reports as not ok says so')
+assert.deepEqual(
+  texts(headerOf(tree)).slice(2),
+  ['Monthly 100%'],
+  'the header names the most-used window, at its limit',
+)
+
+// ── what the panel says when there is no plan to draw ──────────────────────
+usageReply = { status: 200, body: '<!doctype html><html><body>shell</body></html>' }
+render()
+await flush()
+tree = render()
+assert.ok(
+  texts(tree).includes('This deployment does not serve the plan-usage route.'),
+  'a host half without the route is named as such, not blamed on the provider',
+)
+assert.equal(findAll(tree, (element) => element.props?.className === 'ogcBar').length, 0, 'no bar is drawn from a reply that carried none')
+assert.ok(byText(tree, 'Refresh plan usage') !== undefined, 'a failed read still offers a retry')
+assert.deepEqual(texts(headerOf(tree)).slice(2), [], 'the header stops naming a window it can no longer vouch for')
+
+usageReply = {
+  status: 502,
+  body: { error: { code: 'endpoint', message: 'http://127.0.0.1:1/v1/usage answered HTTP 404' } },
+}
+render()
+await flush()
+tree = render()
+assert.ok(
+  texts(tree).includes('Could not read plan usage: http://127.0.0.1:1/v1/usage answered HTTP 404'),
+  'a provider failure keeps the host’s message, address included',
+)
+
+usageReply = { status: 400, body: { error: { code: 'missing-key', message: 'No API key is configured for OPENCODE_GO_API_KEY.' } } }
+render()
+await flush()
+tree = render()
+assert.ok(
+  texts(tree).includes('Add an API key to read plan usage.'),
+  'a keyless deployment points at the field below instead of showing an error',
+)
+assert.equal(byText(tree, 'Refresh plan usage'), undefined, 'a keyless panel offers no retry that could not work')
+assert.equal(calls.mutations.length, 0, 'reading the plan never writes a setting')
+
+usageReply = {
+  status: 200,
+  body: {
+    windows: [
+      { key: 'rolling', status: 'ok', percent: 0, resetsAt: futureIso(4 * 3600000 + 51 * 60000) },
+      { key: 'weekly', status: 'ok', percent: 40, resetsAt: futureIso(3 * 86400000 + 12 * 3600000) },
+      { key: 'monthly', status: 'ok', percent: 59, resetsAt: futureIso(15 * 86400000) },
+    ],
+    fetchedAt: new Date().toISOString(),
+  },
+}
+render()
+await flush()
+tree = render()
+assert.deepEqual(texts(headerOf(tree)).slice(2), ['Monthly 59%'], 'the retry brings the plan back to the header')
 
 // ── staging: nothing is written until Save ──────────────────────────────────
 const keyInput = findAll(tree, (element) => element.props?.type === 'password')[0]
@@ -293,35 +504,145 @@ tree = render()
 assert.equal(calls.mutations.length + calls.writes.length + calls.credentialSet.length, 0, 'staged edits write nothing')
 assert.ok(texts(tree).includes('unsaved'), 'staging marks the card unsaved')
 
-// ── the model editor: protocol, capacities, reasoning, and allowed input ────
-byText(tree, 'addModel').props.onClick()
-tree = render()
-const idInput = findAll(tree, (element) => element.type === 'input' && element.props.type === 'text' && element.props.className === 'ogcInput' && element.props.value === '')[0]
-assert.ok(idInput !== undefined, 'editor renders an empty model id input')
-idInput.props.onChange({ target: { value: 'glm-5.3-extra' } })
-tree = render()
-const contextInput = findAll(tree, (element) => element.type === 'input' && element.props.placeholder === 'capacityHint')[0]
-contextInput.props.onChange({ target: { value: '256K' } })
-tree = render()
-const checkboxes = findAll(tree, (element) => element.type === 'input' && element.props.type === 'checkbox')
-assert.equal(checkboxes.length, 3, 'editor renders reasoning plus the two modalities')
-/** Toggle the checkbox whose label text is `label`. */
-const toggle = (label) => {
-  const boxes = findAll(tree, (element) => element.type === 'input' && element.props.type === 'checkbox')
-  const labels = findAll(tree, (element) => element.props?.className === 'ogcCheck')
-  const at = labels.findIndex((element) => texts(element).includes(label))
-  assert.ok(at >= 0, `editor offers a ${label} checkbox`)
-  boxes[at].props.onChange({ target: { checked: true } })
+// ── the model list: one row per served model, with its effective facts ──────
+/** Every model row. A disabled row carries the mark as a second class. */
+const rows = () =>
+  findAll(
+    tree,
+    (element) =>
+      typeof element.props?.className === 'string' &&
+      element.props.className.split(' ').includes('ogcItem'),
+  )
+assert.equal(rows().length, 3, 'the list has a row for every advertised model')
+assert.ok(
+  texts(rows()[0]).includes('GLM 5.3') && texts(rows()[0]).includes('1M ctx'),
+  'a row names the model and the context window the request would use',
+)
+assert.ok(
+  texts(rows()[0]).includes('text + images'),
+  'a row states the modalities the catalog advertises',
+)
+assert.ok(!texts(tree).includes('overrideTag'), 'nothing is overridden before the user edits')
+
+/** The row whose id is `id`. */
+const rowOf = (id) => rows().find((row) => texts(row).includes(id))
+/** Click the button labelled `label` inside one row. */
+const clickIn = (row, label) => {
+  const button = findAll(row, (element) => element.type === 'button' && texts(element).includes(label))[0]
+  assert.ok(button !== undefined, `row offers ${label}`)
+  button.props.onClick()
   tree = render()
 }
-toggle('reasoningHint')
-toggle('inputImage')
+
+// ── the filter narrows the list to what it matches ──────────────────────────
+const filterInput = findAll(
+  tree,
+  (element) => element.props?.['aria-label'] === 'filterModels',
+)[0]
+assert.ok(filterInput !== undefined, 'the list carries a filter box')
+filterInput.props.onChange({ target: { value: 'glm' } })
+tree = render()
+assert.equal(rows().length, 1, 'the filter narrows the list by id or name')
+assert.ok(texts(rows()[0]).includes('glm-5.3'), 'the row left is the one that matched')
+filterInput.props.onChange({ target: { value: 'nothing-like-this' } })
+tree = render()
+assert.ok(texts(tree).includes('modelsNoMatch'), 'an unmatched filter says so instead of showing nothing')
+filterInput.props.onChange({ target: { value: '' } })
+tree = render()
+assert.equal(rows().length, 3, 'clearing the filter restores the list')
+
+// ── editing one model states only what changed ──────────────────────────────
+clickIn(rowOf('glm-5.3'), 'editModel')
+const inheritOptions = () =>
+  findAll(tree, (element) => element.type === 'option' && texts(element)[0] === 'inheritApi')
+assert.equal(inheritOptions().length, 1, 'the protocol may be left to the catalog')
+const contextPlaceholder = findAll(
+  tree,
+  (element) => element.type === 'input' && element.props['aria-label'] === 'contextLabel',
+)[0]
+assert.equal(contextPlaceholder.props.placeholder, '1000000', 'the editor shows the inherited capacity as its placeholder')
+contextPlaceholder.props.onChange({ target: { value: '256K' } })
+tree = render()
+const reasoningSelect = findAll(
+  tree,
+  (element) => element.type === 'select' && element.props['aria-label'] === 'reasoningLabel',
+)[0]
+assert.equal(reasoningSelect.props.value, 'inherit', 'reasoning starts out inherited')
+reasoningSelect.props.onChange({ target: { value: 'off' } })
+tree = render()
+const inputSelect = findAll(
+  tree,
+  (element) => element.type === 'select' && element.props['aria-label'] === 'inputLabel',
+)[0]
+inputSelect.props.onChange({ target: { value: 'both' } })
+tree = render()
 byText(tree, 'applyModel').props.onClick()
 tree = render()
+assert.ok(texts(rowOf('glm-5.3')).includes('overrideTag'), 'an edited model is marked as an override')
 assert.ok(
-  findAll(tree, (element) => element.props?.className === 'ogcItem').length === 1,
-  'the applied model joins the staged list',
+  texts(rowOf('glm-5.3')).includes('256K ctx'),
+  'the row shows the override where it states a value, not the catalog value it replaces',
 )
+assert.equal(rows().length, 3, 'editing a model does not add a row')
+
+// ── an unparseable capacity is reported, and an override can be removed ─────
+clickIn(rowOf('minimax-m3'), 'editModel')
+const capacityInput = findAll(
+  tree,
+  (element) => element.type === 'input' && element.props['aria-label'] === 'contextLabel',
+)[0]
+capacityInput.props.onChange({ target: { value: 'lots' } })
+tree = render()
+byText(tree, 'applyModel').props.onClick()
+tree = render()
+assert.ok(texts(tree).includes('capacityInvalid'), 'an unparseable capacity is reported rather than dropped')
+assert.equal(byText(tree, 'save').props.disabled, true, 'save is blocked while a capacity is invalid')
+clickIn(rowOf('minimax-m3'), 'deleteModel')
+assert.equal(rows().length, 3, 'removing an override leaves the model in the list')
+assert.ok(!texts(rowOf('minimax-m3')).includes('overrideTag'), 'a removed override is no longer marked')
+
+// ── adding a model the catalog does not list keeps the ID editable ──────────
+byText(tree, 'addModel').props.onClick()
+tree = render()
+assert.equal(
+  findAll(tree, (element) => element.type === 'option' && texts(element)[0] === 'inheritApi').length,
+  0,
+  'a model the catalog does not describe cannot inherit a protocol',
+)
+const idInput = findAll(
+  tree,
+  (element) => element.type === 'input' && element.props['aria-label'] === 'idLabel',
+)[0]
+assert.ok(idInput !== undefined, 'the add form renders a model ID input')
+assert.equal(idInput.props.disabled, false, 'the ID of a new model stays editable')
+idInput.props.onChange({ target: { value: 'glm-5.3-extra' } })
+tree = render()
+assert.equal(
+  findAll(tree, (element) => element.type === 'input' && element.props['aria-label'] === 'idLabel')[0].props
+    .disabled,
+  false,
+  'typing an ID does not lock the field after the first keystroke',
+)
+byText(tree, 'applyModel').props.onClick()
+tree = render()
+assert.equal(rows().length, 4, 'the added model joins the list')
+
+// ── disabling a model keeps its row and states only the flag ────────────────
+clickIn(rowOf('grok-4.6'), 'disableModel')
+assert.ok(texts(rowOf('grok-4.6')).includes('disabledTag'), 'a disabled model is marked')
+assert.equal(
+  findAll(
+    rowOf('grok-4.6'),
+    (element) => element.type === 'button' && texts(element).includes('enableModel'),
+  ).length,
+  1,
+  'a disabled model offers Enable instead',
+)
+assert.ok(
+  texts(rowOf('grok-4.6')).includes('128K ctx'),
+  'a disabled model still shows the facts it is described by',
+)
+assert.equal(rows().length, 4, 'a disabled model stays in the list')
 
 // ── Save: one credentials write plus one mutation, then collapse ────────────
 byText(tree, 'save').props.onClick()
@@ -334,28 +655,50 @@ assert.deepEqual(calls.mutations[0], [
     op: 'set',
     path: ['models'],
     value: [
-      {
-        id: 'glm-5.3-extra',
-        api: 'openai-completions',
-        contextWindow: 262144,
-        reasoning: true,
-        input: ['text', 'image'],
-      },
+      // No `api`: the card states what it changed and leaves the installed
+      // protocol, and everything else untouched, to the catalog merge.
+      { id: 'glm-5.3', contextWindow: 262144, reasoning: false, input: ['text', 'image'] },
+      { id: 'glm-5.3-extra', api: 'openai-completions' },
+      // Nothing but the flag: switching a catalog model off must not restate
+      // anything the catalog already describes.
+      { id: 'grok-4.6', disabled: true },
     ],
   },
   { op: 'set', path: ['apiRoot'], value: 'https://example.test/go' },
-], 'save emits the staged model override, its reasoning and allowed input, and the endpoint')
+], 'save emits the partial override, the added model, the disable, and the endpoint')
 
-// The host answers: the stored section now carries what was saved.
+// The host answers: the stored section now carries what was saved — the partial
+// override for the catalog's model, and the stated protocol of the added one.
 state = {
   ...state,
   apiRoot: 'https://example.test/go',
-  models: [{ id: 'glm-5.3-extra', api: 'openai-completions', contextWindow: 262144, reasoning: true, input: ['text', 'image'] }],
+  models: [
+    { id: 'glm-5.3', contextWindow: 262144, reasoning: false, input: ['text', 'image'] },
+    { id: 'glm-5.3-extra', api: 'openai-completions' },
+    { id: 'grok-4.6', disabled: true },
+  ],
 }
 snapshot = { ...snapshot, value: state, user: { apiRoot: 'https://example.test/go', models: state.models }, revision: 2 }
 tree = render()
 assert.equal(tree.props.className, 'ogcCard', 'a successful save collapses the card')
 assert.equal(findAll(tree, (element) => element.props?.className === 'ogcPending').length, 0, 'a saved card is clean')
+
+// ── enabling again drops an entry that carried nothing but the flag ─────────
+tree = openCard()
+assert.ok(texts(rowOf('grok-4.6')).includes('disabledTag'), 'the stored disable is what the card renders')
+clickIn(rowOf('grok-4.6'), 'enableModel')
+assert.ok(!texts(rowOf('grok-4.6')).includes('disabledTag'), 'enabling clears the mark')
+assert.ok(
+  !texts(rowOf('grok-4.6')).includes('overrideTag'),
+  'enabling drops an entry that carried nothing but the flag',
+)
+assert.equal(calls.mutations.length, 1, 'enabling is staged, not written')
+byText(tree, 'discard').props.onClick()
+tree = render()
+assert.ok(
+  texts(rowOf('grok-4.6')).includes('disabledTag'),
+  'discarding restores the stored state rather than the staged one',
+)
 
 // ── an overridden field offers Reset, which stages an unset ─────────────────
 tree = openCard()
@@ -388,16 +731,22 @@ assert.equal(calls.writes.at(-1).field, 'refreshEpoch', 'refresh writes the epoc
 tree = openCard()
 const query = byText(tree, 'queryEndpoint')
 await query.props.onClick()
+await flush()
 assert.deepEqual(
   plain(calls.discovery.at(-1).request),
   { provider: 'opencode-go', baseURL: 'https://example.test/go' },
   'endpoint query names the configured base URL',
 )
 tree = openCard()
-byText(tree, 'showIds').props.onClick()
-tree = render()
-const chips = findAll(tree, (element) => element.props?.className === 'ogcChip')
-assert.deepEqual(chips.map((chip) => texts(chip)[0]), ['glm-5.3', 'minimax-m3', 'grok-4.6'])
+assert.ok(
+  texts(tree).includes('4 models · 3 overridden · 1 disabled · endpoint'),
+  'the count line follows an endpoint query and reports the override and disable counts',
+)
+assert.equal(
+  rows().length,
+  4,
+  'the endpoint list keeps the override the catalog does not advertise beside the models it does',
+)
 
 // ── a host without the trigger field offers no refresh that cannot work ─────
 delete state.refreshEpoch
@@ -408,8 +757,13 @@ const oldRefresh = byText(tree, 'refreshNow')
 assert.equal(oldRefresh.props.disabled, true, 'refresh is disabled when the host has no trigger field')
 assert.ok(texts(tree).includes('refreshRestart'), 'card explains the restart instead of failing the write')
 
-// ── an unserved namespace renders nothing at all ───────────────────────────
+// ── an unserved namespace says so instead of vanishing ─────────────────────
 snapshot = { ...snapshot, status: 'unavailable', value: undefined }
-assert.equal(render(), null, 'an unavailable namespace renders no card')
+const missing = render()
+assert.notEqual(missing, null, 'an unavailable namespace still renders, so the failure is visible')
+assert.ok(
+  texts(missing).includes('unavailable'),
+  'an unavailable namespace explains itself instead of disappearing silently',
+)
 
 console.log('card smoke: PASS')
