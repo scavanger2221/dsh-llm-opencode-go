@@ -11,6 +11,7 @@ import { createProvider, envApiKeyAuth } from '@earendil-works/pi-ai'
 import { openAICompletionsApi } from '@earendil-works/pi-ai/api/openai-completions.lazy'
 import { OpenCodeGoAdapter } from '../lib/adapter.js'
 import { createCatalog } from '../lib/catalog.js'
+import { toPiAssistant } from '../lib/convert.js'
 import { sessionRequestHeaders } from '../lib/index.js'
 
 const seen = []
@@ -24,6 +25,42 @@ const server = createServer((req, res) => {
     res.writeHead(200, { 'content-type': 'text/event-stream' })
     const chunk = (value) => res.write(`data: ${JSON.stringify(value)}\n\n`)
     const common = { id: 'chat-1', object: 'chat.completion.chunk', created: 1, model: 'glm-5.3' }
+    // A prompt that asks for the tool gets a streamed tool call, the way the Go
+    // endpoint answers one: a first delta carrying the call identity, then
+    // argument fragments, then the tool_calls finish reason.
+    if (body.includes('use-the-tool')) {
+      chunk({
+        ...common,
+        choices: [
+          {
+            index: 0,
+            delta: {
+              role: 'assistant',
+              tool_calls: [{ index: 0, id: 'call-1', type: 'function', function: { name: 'bash', arguments: '' } }],
+            },
+            finish_reason: null,
+          },
+        ],
+      })
+      chunk({
+        ...common,
+        choices: [
+          {
+            index: 0,
+            delta: { tool_calls: [{ index: 0, function: { arguments: '{"command":"echo hi"}' } }] },
+            finish_reason: null,
+          },
+        ],
+      })
+      chunk({
+        ...common,
+        choices: [{ index: 0, delta: {}, finish_reason: 'tool_calls' }],
+        usage: { prompt_tokens: 10, completion_tokens: 2, total_tokens: 12 },
+      })
+      res.write('data: [DONE]\n\n')
+      res.end()
+      return
+    }
     chunk({ ...common, choices: [{ index: 0, delta: { role: 'assistant', content: 'hi ' }, finish_reason: null }] })
     chunk({ ...common, choices: [{ index: 0, delta: { content: 'there' }, finish_reason: null }] })
     chunk({
@@ -185,6 +222,161 @@ assert(finish.type === 'finish' && finish.reason.kind === 'stop', 'terminal fini
 const usage = chunks.find((chunk) => chunk.type === 'usage')
 assert(usage.usage.inputTokens === 10 && usage.usage.outputTokens === 2, 'usage mapping')
 assert(finish.replayState?.response?.kind === 'opencode-go', 'replay envelope emitted')
+
+// The replay envelope is protocol-independent again. pi-ai 0.87 reports the
+// model that actually served a turn in `responseModel` on every protocol, so the
+// Anthropic-only workaround — promoting `message.model` into `responseModel` when
+// it differed from the requested model — is gone from `dsh-llm-pi-ai` 0.2.0, and
+// has to stay gone here: `lib/convert.js` mirrors that seam, so an envelope this
+// route writes must be the one the shipped adapter would have written.
+const servedModel = 'brand-new-model-actual'
+const replayCatalog = createCatalog({
+  apiRoot,
+  providerId: 'opencode-go',
+  models: [{ id: 'brand-new-model', api: 'anthropic-messages', contextWindow: 4242 }],
+})
+const anthropicReply = [
+  {
+    type: 'done',
+    message: {
+      api: 'anthropic-messages',
+      provider: 'opencode-go',
+      // 0.85-shaped on purpose: the served model in `model`, `responseModel` unset.
+      model: servedModel,
+      content: [{ type: 'text', text: 'hi' }],
+      usage: { input: 3, output: 1, cacheRead: 0, cacheWrite: 0, totalTokens: 4 },
+      stopReason: 'stop',
+      timestamp: 0,
+    },
+  },
+]
+const replayAdapter = new OpenCodeGoAdapter({
+  ...adapter.config,
+  catalog: {
+    get: (id) => replayCatalog.get(id),
+    models: () => replayCatalog.models(),
+    ids: () => replayCatalog.ids(),
+    isInstalled: () => false,
+  },
+  provider: () =>
+    createProvider({
+      id: 'opencode-go',
+      name: 'OpenCode Go',
+      auth: envApiKeyAuth('OpenCode Go API key', ['OPENCODE_API_KEY']),
+      models: [...replayCatalog.models().values()],
+      api: { 'anthropic-messages': { streamSimple: () => anthropicReply } },
+    }),
+})
+const replayChunks = []
+for await (const chunk of replayAdapter.stream({ ...options, model: 'brand-new-model' })) {
+  replayChunks.push(chunk)
+}
+const envelope = replayChunks.at(-1).replayState
+assert(
+  envelope.response.model === 'brand-new-model' && envelope.response.responseModel === undefined,
+  'an anthropic-messages response no longer promotes the served model into responseModel',
+)
+
+// ...and the read side restores the requested identity, keeping the served model
+// beside it rather than in its place.
+const replayed = toPiAssistant(
+  {
+    id: 'a1',
+    role: 'assistant',
+    content: [{ type: 'text', text: 'hi' }],
+    source: {
+      kind: 'model',
+      provider: 'opencode-go',
+      model: 'brand-new-model',
+      replayState: {
+        response: {
+          kind: 'opencode-go',
+          version: 1,
+          api: 'anthropic-messages',
+          provider: 'opencode-go',
+          model: 'brand-new-model',
+          responseModel: servedModel,
+          stopReason: 'stop',
+        },
+        blocks: [{ type: 'text' }],
+      },
+    },
+  },
+  undefined,
+)
+assert(
+  replayed.model === 'brand-new-model' && replayed.responseModel === servedModel,
+  'replay keeps the requested model and carries the served one beside it',
+)
+
+// The prompt and the tool declarations are the whole point of the request, and
+// since pi-ai 0.87 the API implementations read them from the normalized
+// transcript rather than from `context.systemPrompt`/`context.tools`. A route
+// that dispatches through the provider it built itself must therefore fold them
+// (`normalizeContext`); without that fold the request carries neither, and the
+// model answers as a bare chat model — inventing tool markup as text instead of
+// calling the tool. That is precisely how this route lost every tool call on
+// harness 0.2.0, so both halves are pinned here: what goes out, and what a
+// streamed tool call turns into.
+const toolOptions = {
+  ...options,
+  system: 'You are a coding agent.',
+  tools: [
+    {
+      name: 'bash',
+      description: 'Run a shell command.',
+      parameters: {
+        type: 'object',
+        properties: { command: { type: 'string' } },
+        required: ['command'],
+      },
+    },
+  ],
+}
+const requestsBeforeToolCall = seen.length
+const toolChunks = []
+for await (const chunk of adapter.stream(toolOptions)) toolChunks.push(chunk)
+assert(seen.length === requestsBeforeToolCall + 1, 'a tool-bearing prompt is one provider request')
+const toolRequest = seen.at(-1).body
+assert(
+  Array.isArray(toolRequest.tools) && toolRequest.tools.length === 1,
+  'the tool declaration reaches the wire',
+)
+assert(toolRequest.tools[0].function?.name === 'bash', 'the wire carries the tool by name')
+assert(
+  JSON.stringify(toolRequest.messages.find((message) => message.role === 'system')?.content ?? '').includes(
+    'You are a coding agent.',
+  ),
+  'the system prompt reaches the wire',
+)
+
+const toolCallChunks = []
+for await (const chunk of adapter.stream({
+  ...toolOptions,
+  messages: [
+    {
+      id: 'm-tool',
+      role: 'user',
+      content: [{ type: 'text', text: 'use-the-tool: run echo hi' }],
+      source: { kind: 'user' },
+    },
+  ],
+})) {
+  toolCallChunks.push(chunk)
+}
+const streamedToolCall = toolCallChunks.find(
+  (chunk) => chunk.type === 'block-end' && chunk.block?.type === 'tool-call',
+)
+assert(
+  toolChunks.every((chunk) => chunk.type !== 'block-end' || chunk.block?.type !== 'tool-call'),
+  'a prompt that asks for no tool streams no tool call',
+)
+assert(
+  streamedToolCall !== undefined &&
+    streamedToolCall.block.name === 'bash' &&
+    streamedToolCall.block.arguments === '{"command":"echo hi"}',
+  'a streamed tool call becomes one tool-call block',
+)
 
 // An unsupported effort must be refused before any provider I/O.
 const before = seen.length

@@ -36,10 +36,10 @@ Two things about Go need code the shared pi-ai adapter does not provide:
 
 ## Installation
 
-DeepSeek Harness 0.1.0-rc.6 or later is required. Install directly from GitHub:
+DeepSeek Harness 0.2.0-rc.2 or later is required. Install directly from GitHub:
 
 ~~~sh
-dsh plugin --profile web add github:scavanger2221/dsh-llm-opencode-go#v0.1.3
+dsh plugin --profile web add github:scavanger2221/dsh-llm-opencode-go#v0.1.4
 dsh web
 ~~~
 

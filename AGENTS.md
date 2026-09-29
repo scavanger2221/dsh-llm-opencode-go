@@ -46,6 +46,19 @@ bundler, and do not generate `lib/` from anywhere else.
   `user` and `tool` messages, refused in every other role. On a harness or
   pi-ai upgrade, re-diff the context region of `dsh-llm-pi-ai/lib/index.js`
   against `lib/convert.js`; `tests/adapter.smoke.mjs` pins the resulting rules.
+- **The pi-ai context must be normalized before it reaches a provider.** From
+  pi-ai 0.87 the prompt and the tool declarations are folded into the leading
+  system message by `normalizeContext`, and only the `Models` registry
+  (`Models.streamSimple`) calls it — the API implementations read
+  `getDeclaredTools(messages)`/`getCurrentSystemMessage`, and nothing reads
+  `context.systemPrompt` or `context.tools` any more. `dsh-llm-pi-ai` streams
+  through that registry; this route dispatches through the provider it builds
+  itself, so `lib/adapter.js` calls the same public `normalizeContext`
+  (`@earendil-works/pi-ai/utils/transcript`) at the call site. Skip it and every
+  request goes out with the user turn alone — no system prompt, no tools — and
+  the model answers as a bare chat model, inventing tool markup as text instead
+  of calling a tool. `tests/adapter.smoke.mjs` asserts a tool declaration and the
+  system prompt reach the wire, and that a streamed tool call becomes a block.
 - **Do not put a secret in a settings field.** The API key goes through the
   credentials service (`ctx.credentials.resolve(apiKeyEnv)`); settings fields are
   the endpoint, refresh policy, and model overrides. The `OPENCODE_GO_API_KEY`
